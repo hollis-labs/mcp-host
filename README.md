@@ -13,14 +13,16 @@ as the worked example of building on this library.
 
 ## Status
 
-Pre-1.0 (`v0.x`), first release. One consumer (`apps/station`) so far —
-exported interfaces are new and may still shift between minor versions;
-treat any minor bump as potentially breaking and read the CHANGELOG before
+Pre-1.0 (`v0.x`). One consumer (`apps/station`) so far — exported
+interfaces are new and may still shift between minor versions; treat any
+minor bump as potentially breaking and read the CHANGELOG before
 upgrading. Patch bumps (`v0.x.y`) are documentation and internal hardening
 only. Built and tested end to end: config, registry, both transport modes,
 per-logical-server serving, a top-level `Run` entrypoint, and two real
-example plugins proving both modes work simultaneously. See
-[`CHANGELOG.md`](./CHANGELOG.md) for release notes.
+example plugins proving both modes work simultaneously. As of `v0.2.0`,
+`inprocess` tool discovery is manifest-driven, aligned with Tangent's
+plugin host rather than Nanite's live-RPC pattern — see "Process vs
+inprocess" below. See [`CHANGELOG.md`](./CHANGELOG.md) for release notes.
 
 ## Install
 
@@ -76,8 +78,22 @@ logical_servers:
 restart-on-crash for a spawned subprocess (default `true`).
 
 `inprocess` (`transport: inprocess`) always spawns: `command`, `args`,
-`env`, optional `supervise: false`. See "Process vs inprocess" below for
-which to pick.
+`env`, optional `supervise: false`, and **`tools`** — the plugin's full
+tool catalog, declared statically (required, non-empty):
+
+```yaml
+inprocess:
+  command: ./bin/clock-plugin
+  tools:
+    - name: now
+      description: Returns the current time.
+      input_schema: { type: object, properties: {} }
+      annotations: { readOnlyHint: true }
+```
+
+mcp-host never asks the running plugin what tools it has — see "Process
+vs inprocess" below for why. See `examples/config/host.yaml` for a full
+worked example.
 
 `serve` exposes a logical server on the wire:
 
@@ -97,11 +113,23 @@ See `config/config.go` for the full validation rules.
 
 Per the ADR: `process` mode is a real, independent MCP server in any
 language, isolated, usable standalone outside the host — heavier to author.
+Its tools are discovered live, the normal MCP way: a real MCP server must
+support `tools/list`, and this host calls it once served.
+
 `inprocess` mode is a Go subprocess speaking plugin-sdk's own lightweight
-dialect (`plugin/init`, `mcp/list_tools`, `mcp/call_tool`, ...); the host
-performs the one real MCP handshake on its behalf. Lighter to author and
-idiomatic for a small first-party Go tool, but coupled to this library's own
-plugin-sdk dialect version and never runs standalone.
+dialect (`plugin/init`, `plugin/health`, `mcp/call_tool`); the host
+performs the one real MCP handshake on its behalf. Its tools are declared
+in config instead — mcp-host never sends `mcp/list_tools` to an inprocess
+plugin. This is a deliberate design choice, not a missing feature: it
+matches Tangent's own plugin host, whose manifest package says outright
+that it "deliberately never calls `mcp/list_tools`, because Nanite built
+runtime self-declaration and discarded it." It's also the only way to make
+plugin-sdk's own documented `subprocess.Serve` helper usable at all —
+verified against plugin-sdk v0.5.0, `Serve`'s dispatch has no case for
+`mcp/list_tools` and no capability interface for it either, so a plugin
+that relied on live discovery could never actually answer it. Lighter to
+author and idiomatic for a small first-party Go tool, but coupled to this
+library's own plugin-sdk dialect version and never runs standalone.
 
 Default to `process` unless you're specifically writing something small and
 Go-only for this host and don't need it to run anywhere else.
@@ -119,7 +147,9 @@ Go-only for this host and don't need it to run anywhere else.
 - `transport/inprocess` — `inprocess` mode: this library's own host-side
   driver for plugin-sdk/subprocess's JSON-RPC dialect, plus the same
   spawn+supervision shape as `transport/process`, plus a proactive
-  `plugin/health` poll on top of reactive crash detection.
+  `plugin/health` poll on top of reactive crash detection. Tool discovery
+  is manifest-driven (config-declared), never a live `mcp/list_tools` call
+  — see "Process vs inprocess" above.
 - `serving` — bridges a registered logical server onto its own
   `go-mcp/server.Server`, over stdio and/or HTTP, transport-agnostic by
   construction.
@@ -153,21 +183,6 @@ No CI, no Makefile — these three are the only gate (same convention as
   `InitParams.DataDir`/`CacheDir` are sent empty — a plugin that calls
   `ResolvedDataDir()` gets `ErrNoDataDir`. Fine for the current stateless
   examples; a real gap for a future plugin needing persistence.
-- **`plugin-sdk`'s `subprocess.Serve()` cannot answer `mcp/list_tools`.**
-  Verified against plugin-sdk v0.5.0: `Serve`'s dispatch loop has a case for
-  every other documented method but that one, and no capability interface
-  exists for it either — a plugin built the documented way (`Serve` plus
-  capability interfaces) cannot expose its tool list to a host that calls
-  it, full stop. `examples/plugins/clock-plugin` and
-  `transport/inprocess`'s own tests hand-roll the plugin-side wire loop
-  directly against `protocol.go` instead of using `Serve`, with the gap
-  documented at the top of that example's `main.go`. A future plugin-sdk
-  release adding `mcp/list_tools` support to `Serve` should let both shrink
-  back down to a normal `Serve(...)` call. `mcp/list_tools`'s wire *shape*
-  is also plugin-sdk's own gap: the SDK names the method but defines no
-  request/response type for it at all, so this host's shape
-  (`{"server":...}` / `{"tools":[...]}`, mirroring Nanite's own improvised
-  convention) is an inferred compatibility choice, not a verified spec.
 - **`go-mcp/client.Pool`'s stdio dial can't be supervised.** Pool's own
   stdio spawn is fully internal and reactive-only — it never exposes the
   spawned `*exec.Cmd`, so nothing outside it can ever get a real

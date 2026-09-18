@@ -53,13 +53,19 @@ never exposes the `*exec.Cmd`, which real supervision needs for
 dial (URL) variant. Don't "simplify" the spawn path back onto Pool without
 re-solving this.
 
-`transport/inprocess` and `examples/plugins/clock-plugin` hand-roll the
-plugin-side wire loop for `mcp/list_tools` rather than using
-`plugin-sdk/subprocess.Serve` — verified against plugin-sdk v0.5.0,
-`Serve`'s dispatch has no case for that method and no capability interface
-exists for it, so a plugin built the documented way cannot answer it. See
-`examples/plugins/clock-plugin/main.go`'s doc comment before assuming
-`Serve` is usable for a new inprocess plugin's tool list.
+`transport/inprocess` never sends `mcp/list_tools` to a plugin —
+`config.InprocessConfig.Tools` is the tool catalog's only source of truth.
+This is deliberate, aligned with Tangent's own plugin host (its manifest
+package says outright it "deliberately never calls mcp/list_tools,
+because Nanite built runtime self-declaration and discarded it"), not a
+workaround. Don't add a live discovery call back in "to keep the manifest
+in sync" — that's the exact pattern both this library and Tangent moved
+away from on purpose. One consequence worth knowing: it's also the only
+reason `examples/plugins/clock-plugin` can use plugin-sdk's own documented
+`subprocess.Serve` helper at all — verified against plugin-sdk v0.5.0,
+`Serve`'s dispatch has no case for `mcp/list_tools` and no capability
+interface for it either, so a plugin that needed live discovery to work
+could never have used `Serve` regardless.
 
 A relayed tool with no declared input schema gets `EmptyObjectSchema()`
 substituted before registration (`serving/serving.go`) — the official SDK's

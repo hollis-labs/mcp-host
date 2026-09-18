@@ -1,4 +1,4 @@
-# Example Station config. See README.md for the full field reference.
+# Example mcp-host config. See README.md for the full field reference.
 #
 # Two logical servers: a process-mode echo server exposed over stdio, and
 # an inprocess-mode clock plugin exposed over HTTP.
@@ -19,6 +19,20 @@ logical_servers:
     transport: inprocess
     inprocess:
       command: ./bin/clock-plugin
+      # Tool catalog is declared here, not discovered from the running
+      # plugin — see transport/inprocess's package doc for why.
+      tools:
+        - name: now
+          description: Returns the current UTC time in RFC 3339 format.
+          input_schema:
+            type: object
+            properties: {}
+            additionalProperties: false
+          annotations:
+            readOnlyHint: true
+            destructiveHint: false
+            idempotentHint: false
+            openWorldHint: false
     serve:
       http:
         path: /clock

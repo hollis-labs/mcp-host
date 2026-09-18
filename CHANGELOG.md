@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.2.0 — 2026-09-18
+
+### Changed
+
+- **Breaking: `inprocess` tool discovery is now manifest-driven, never
+  live.** `config.InprocessConfig` gains a required `tools` field
+  declaring the plugin's full tool catalog (name, description, input
+  schema, annotations) statically; `transport/inprocess.Transport.ListTools`
+  no longer sends `mcp/list_tools` to the subprocess — it returns the
+  config-declared catalog, which now works even while the plugin is down
+  or mid-restart. This aligns with Tangent's own plugin host, which
+  deliberately never calls `mcp/list_tools` "because Nanite built runtime
+  self-declaration and discarded it" (its own manifest package doc,
+  verified against source). It's also what makes plugin-sdk's documented
+  `subprocess.Serve` helper usable for an inprocess plugin at all — see
+  v0.1.0's now-resolved "Known gaps" entry below.
+- `examples/plugins/clock-plugin` rewritten to use `subprocess.Serve`
+  (`Plugin` + `MCPHandler` + `HealthChecker`) instead of hand-rolling the
+  wire protocol — a direct consequence of the change above.
+- Existing config files must add a `tools:` block to every `inprocess`
+  logical server; see `examples/config/host.yaml`.
+
 ## v0.1.0 — 2026-09-18
 
 First release: a dual-transport MCP plugin host, extracted from

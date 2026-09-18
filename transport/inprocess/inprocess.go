@@ -2,28 +2,37 @@
 // logical server backed by a subprocess plugin speaking
 // plugin-sdk/subprocess's JSON-RPC dialect. mcp-host performs the one
 // real MCP handshake on the plugin's behalf; the plugin itself never
-// implements MCP, only plugin/init, plugin/load, plugin/health,
-// mcp/list_tools, and mcp/call_tool.
+// implements MCP, only plugin/init, plugin/load, plugin/health, and
+// mcp/call_tool.
+//
+// Tool discovery is manifest-driven, never live. config.InprocessConfig.Tools
+// declares the plugin's full tool catalog statically, and this package
+// never sends mcp/list_tools to the subprocess — ListTools just returns
+// what the config already said. Two independent things point the same
+// way here: plugin-sdk's own subprocess.Serve has no dispatch case for
+// mcp/list_tools at all (verified against v0.5.0's server.go — every
+// other documented method has one), so a plugin built the documented
+// way (Serve + capability interfaces) cannot answer it regardless of
+// what a host does; and Tangent's own plugin host (a separate app in
+// this portfolio, also built on plugin-sdk) went further and says so
+// explicitly in its own manifest package doc: it deliberately never
+// calls mcp/list_tools, "because Nanite built runtime self-declaration
+// and discarded it." Aligning with that verified, considered precedent
+// — not working around a gap — is the design here. It also means a
+// plugin can go back to using plugin-sdk's own subprocess.Serve exactly
+// as documented (Plugin + MCPHandler, optionally HealthChecker): the
+// one RPC method Serve can't answer is one this package never asks for.
 //
 // v1 assumes one plugin subprocess backs exactly one logical server —
 // not the N-servers-per-plugin multiplexing Nanite's PluginMCPTransport
 // supports via a "server" field on every call. Nothing in this
 // portfolio yet needs an inprocess plugin to expose more than one
-// logical server, and the simpler mapping is what T4's own task
+// logical server, and the simpler mapping is what the original task
 // description recommends absent a concrete need. One consequence: for
 // mcp/call_tool, this uses plugin-sdk's own canonical wire types
 // (sdksub.MCPCallRequest/MCPCallResult) directly rather than Nanite's
 // local Server-keyed shape, since there is no second server to
 // disambiguate against.
-//
-// mcp/list_tools has no such canonical type in plugin-sdk — the SDK
-// names the RPC method but never defines its payload shape, so every
-// host has to invent one. This package mirrors Nanite's shape exactly
-// (`{"server": ...}` params, `{"tools": [...]}` result with standard
-// name/description/inputSchema/annotations fields) on the assumption
-// that a plugin author targeting one host's convention is likely to
-// target the other's too — an inferred compatibility choice, not a
-// verified spec, worth flagging if it ever causes friction.
 package inprocess
 
 import (
@@ -63,22 +72,6 @@ var (
 	healthCheckTimeout  = 5 * time.Second
 )
 
-// pluginListToolsParams/pluginListToolsResult are mcp/list_tools's wire
-// shape — see the package doc for why this package defines its own
-// rather than using a type plugin-sdk ships.
-type pluginListToolsParams struct {
-	Server string `json:"server"`
-}
-type pluginListToolsResult struct {
-	Tools []wireTool `json:"tools"`
-}
-type wireTool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema,omitempty"`
-	Annotations map[string]any `json:"annotations,omitempty"`
-}
-
 // Transport backs an inprocess-mode logical server. It owns the plugin
 // subprocess directly (spawn, pipes, stderr tail) for the same reason
 // T3's process.SpawnTransport does: genuine supervision needs the
@@ -89,6 +82,7 @@ type Transport struct {
 	command          string
 	args             []string
 	env              []string
+	tools            []registry.Tool
 	policy           supervise.Policy
 	superviseEnabled bool
 	logger           *slog.Logger
@@ -120,6 +114,7 @@ func New(ctx context.Context, name string, cfg *config.InprocessConfig, logger *
 		command:          cfg.Command,
 		args:             append([]string(nil), cfg.Args...),
 		env:              buildEnv(cfg.Env),
+		tools:            manifestTools(cfg.Tools),
 		policy:           supervise.DefaultPolicy(),
 		superviseEnabled: cfg.SuperviseEnabled(),
 		logger:           logger,
@@ -138,25 +133,30 @@ func New(ctx context.Context, name string, cfg *config.InprocessConfig, logger *
 	return t, nil
 }
 
+// ListTools returns the config-declared tool catalog. It never touches
+// the subprocess — see the package doc — so it succeeds even while the
+// plugin is down or mid-restart; the catalog doesn't depend on live
+// connectivity any more than a process-mode server's advertised name
+// depends on whether a client happens to be connected right now.
 func (t *Transport) ListTools(ctx context.Context) ([]registry.Tool, error) {
-	rpc := t.liveRPC()
-	if rpc == nil {
-		return nil, fmt.Errorf("inprocess transport %q: not connected", t.name)
-	}
-	res, err := callResult[pluginListToolsResult](ctx, rpc, sdksub.MethodListTools, pluginListToolsParams{Server: t.name})
-	if err != nil {
-		return nil, fmt.Errorf("inprocess transport %q: mcp/list_tools: %w", t.name, err)
-	}
-	out := make([]registry.Tool, 0, len(res.Tools))
-	for _, wt := range res.Tools {
-		out = append(out, registry.Tool{
-			Name:        wt.Name,
-			Description: wt.Description,
-			InputSchema: wt.InputSchema,
-			Annotations: wt.Annotations,
-		})
-	}
+	out := make([]registry.Tool, len(t.tools))
+	copy(out, t.tools)
 	return out, nil
+}
+
+// manifestTools converts config-declared tool manifests into
+// registry.Tool once, at construction time.
+func manifestTools(manifests []config.ToolManifest) []registry.Tool {
+	out := make([]registry.Tool, len(manifests))
+	for i, m := range manifests {
+		out[i] = registry.Tool{
+			Name:        m.Name,
+			Description: m.Description,
+			InputSchema: m.InputSchema,
+			Annotations: m.Annotations,
+		}
+	}
+	return out
 }
 
 func (t *Transport) CallTool(ctx context.Context, name string, arguments map[string]any) (*registry.ToolResult, error) {

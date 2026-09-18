@@ -15,6 +15,18 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
+func fixtureTools() []config.ToolManifest {
+	return []config.ToolManifest{{
+		Name:        "ping",
+		Description: "Echoes back the given message.",
+		InputSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"message": map[string]any{"type": "string"}},
+		},
+		Annotations: map[string]any{"readOnlyHint": true, "idempotentHint": true},
+	}}
+}
+
 func selfExecFixtureConfig(extraEnv map[string]string) *config.InprocessConfig {
 	env := map[string]string{fixtureEnvVar: "1"}
 	for k, v := range extraEnv {
@@ -23,6 +35,7 @@ func selfExecFixtureConfig(extraEnv map[string]string) *config.InprocessConfig {
 	return &config.InprocessConfig{
 		Command: os.Args[0],
 		Env:     env,
+		Tools:   fixtureTools(),
 	}
 }
 
@@ -42,6 +55,9 @@ func TestNew_HandshakeListToolsAndCallTool(t *testing.T) {
 	}
 	if len(tools) != 1 || tools[0].Name != "ping" {
 		t.Fatalf("ListTools = %+v, want one tool named ping", tools)
+	}
+	if !tools[0].Annotations["readOnlyHint"].(bool) {
+		t.Errorf("tools[0].Annotations = %+v, want readOnlyHint true (from the manifest, not a live call)", tools[0].Annotations)
 	}
 
 	res, err := tr.CallTool(ctx, "ping", map[string]any{"message": "hi"})
@@ -81,8 +97,20 @@ func TestClose_StopsProcessAndIsIdempotent(t *testing.T) {
 	if err := tr.Close(); err != nil {
 		t.Fatalf("second Close: unexpected error: %v", err)
 	}
-	if _, err := tr.ListTools(ctx); err == nil {
-		t.Fatal("ListTools after Close: expected error, got nil")
+
+	// ListTools is manifest-driven, not live — it must keep answering
+	// from config even after Close, the same way a process-mode server's
+	// advertised name doesn't depend on an open connection.
+	tools, err := tr.ListTools(ctx)
+	if err != nil {
+		t.Fatalf("ListTools after Close: unexpected error: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "ping" {
+		t.Fatalf("ListTools after Close = %+v, want one tool named ping", tools)
+	}
+
+	if _, err := tr.CallTool(ctx, "ping", nil); err == nil {
+		t.Fatal("CallTool after Close: expected error, got nil")
 	}
 }
 
@@ -100,8 +128,8 @@ func TestSupervisedRestart_OnCrash(t *testing.T) {
 	}
 	defer tr.Close()
 
-	if _, err := tr.ListTools(ctx); err != nil {
-		t.Fatalf("initial ListTools: unexpected error: %v", err)
+	if _, err := tr.CallTool(ctx, "ping", map[string]any{"message": "hi"}); err != nil {
+		t.Fatalf("initial CallTool: unexpected error: %v", err)
 	}
 
 	pid := tr.Pid()
@@ -112,11 +140,14 @@ func TestSupervisedRestart_OnCrash(t *testing.T) {
 		t.Fatalf("kill plugin (pid %d): %v", pid, err)
 	}
 
+	// Recovery is checked via CallTool, not ListTools — ListTools is
+	// manifest-driven now and would report success (and the same tool
+	// list) whether or not the subprocess is actually alive.
 	deadline := time.Now().Add(10 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		if tr.RestartCount() > 0 {
-			if _, err := tr.ListTools(ctx); err == nil {
+			if _, err := tr.CallTool(ctx, "ping", map[string]any{"message": "hi"}); err == nil {
 				return // recovered
 			} else {
 				lastErr = err
@@ -184,7 +215,7 @@ func TestSuperviseDisabled_DoesNotRestart(t *testing.T) {
 	if tr.RestartCount() != 0 {
 		t.Fatalf("RestartCount() = %d, want 0 with supervision disabled", tr.RestartCount())
 	}
-	if _, err := tr.ListTools(ctx); err == nil {
-		t.Fatal("ListTools after unsupervised crash: expected error, got nil")
+	if _, err := tr.CallTool(ctx, "ping", nil); err == nil {
+		t.Fatal("CallTool after unsupervised crash: expected error, got nil")
 	}
 }

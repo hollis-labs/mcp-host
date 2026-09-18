@@ -89,6 +89,26 @@ type InprocessConfig struct {
 
 	// Supervise enables restart-on-crash. Defaults to true.
 	Supervise *bool `yaml:"supervise,omitempty"`
+
+	// Tools declares this plugin's tool catalog statically. Required,
+	// non-empty. mcp-host never queries the running subprocess for its
+	// tool list — see the package doc on transport/inprocess for why:
+	// plugin-sdk's own subprocess.Serve has no mcp/list_tools support,
+	// and Tangent's own plugin host deliberately never calls it either,
+	// having tried and abandoned Nanite's live-discovery pattern. The
+	// manifest here is the single source of truth; mcp/call_tool is
+	// still a live RPC to the subprocess for each declared tool.
+	Tools []ToolManifest `yaml:"tools"`
+}
+
+// ToolManifest statically declares one tool an inprocess plugin exposes
+// — the inprocess-mode equivalent of what a process-mode MCP server
+// would otherwise report live via tools/list.
+type ToolManifest struct {
+	Name        string         `yaml:"name"`
+	Description string         `yaml:"description,omitempty"`
+	InputSchema map[string]any `yaml:"input_schema,omitempty"`
+	Annotations map[string]any `yaml:"annotations,omitempty"`
 }
 
 // ServeConfig configures how a logical server is exposed on the wire.
@@ -247,6 +267,19 @@ func (p *InprocessConfig) validate() error {
 	if strings.TrimSpace(p.Command) == "" {
 		return fmt.Errorf("command is required")
 	}
+	if len(p.Tools) == 0 {
+		return fmt.Errorf("tools: at least one tool is required (mcp-host never discovers an inprocess plugin's tools live)")
+	}
+	seen := make(map[string]struct{}, len(p.Tools))
+	for i, t := range p.Tools {
+		if strings.TrimSpace(t.Name) == "" {
+			return fmt.Errorf("tools[%d]: name is required", i)
+		}
+		if _, dup := seen[t.Name]; dup {
+			return fmt.Errorf("tools[%d]: duplicate tool name %q", i, t.Name)
+		}
+		seen[t.Name] = struct{}{}
+	}
 	return nil
 }
 
@@ -266,4 +299,34 @@ func (s *ServeConfig) validate() error {
 		}
 	}
 	return nil
+}
+
+// ServerSummary is a config-static view of one logical server, for a
+// consumer's CLI to display without spawning or dialing anything.
+// ToolNames is only ever populated for inprocess mode (manifest-declared,
+// known without touching the network or a subprocess); it's nil for
+// process mode, whose tools are only known once actually served.
+type ServerSummary struct {
+	ID          string
+	Name        string
+	Description string
+	Transport   TransportMode
+	ToolNames   []string
+}
+
+// Summarize returns a ServerSummary for every logical server in c, in
+// declaration order.
+func (c *Config) Summarize() []ServerSummary {
+	out := make([]ServerSummary, 0, len(c.LogicalServers))
+	for _, ls := range c.LogicalServers {
+		s := ServerSummary{ID: ls.ID, Name: ls.Name, Description: ls.Description, Transport: ls.Transport}
+		if ls.Inprocess != nil {
+			s.ToolNames = make([]string, len(ls.Inprocess.Tools))
+			for i, t := range ls.Inprocess.Tools {
+				s.ToolNames[i] = t.Name
+			}
+		}
+		out = append(out, s)
+	}
+	return out
 }

@@ -25,6 +25,14 @@ logical_servers:
     transport: inprocess
     inprocess:
       command: ./bin/clock-plugin
+      tools:
+        - name: now
+          description: Returns the current time.
+          input_schema:
+            type: object
+            properties: {}
+          annotations:
+            readOnlyHint: true
     serve:
       http:
         path: /clock
@@ -62,6 +70,9 @@ logical_servers:
 	}
 	if clock.Serve == nil || clock.Serve.HTTP == nil || clock.Serve.HTTP.Path != "/clock" {
 		t.Errorf("clock.Serve.HTTP = %+v, want Path /clock", clock.Serve)
+	}
+	if len(clock.Inprocess.Tools) != 1 || clock.Inprocess.Tools[0].Name != "now" {
+		t.Errorf("clock.Inprocess.Tools = %+v, want one tool named now", clock.Inprocess.Tools)
 	}
 }
 
@@ -147,6 +158,30 @@ func TestValidate_RejectsInprocessMissingCommand(t *testing.T) {
 		Inprocess: &InprocessConfig{},
 	}}}
 	assertErrContains(t, cfg.Validate(), "command is required")
+}
+
+func TestValidate_RejectsInprocessMissingTools(t *testing.T) {
+	cfg := &Config{LogicalServers: []LogicalServer{{
+		ID: "x", Name: "X", Transport: TransportInprocess,
+		Inprocess: &InprocessConfig{Command: "x"},
+	}}}
+	assertErrContains(t, cfg.Validate(), "at least one tool is required")
+}
+
+func TestValidate_RejectsInprocessToolMissingName(t *testing.T) {
+	cfg := &Config{LogicalServers: []LogicalServer{{
+		ID: "x", Name: "X", Transport: TransportInprocess,
+		Inprocess: &InprocessConfig{Command: "x", Tools: []ToolManifest{{Description: "no name"}}},
+	}}}
+	assertErrContains(t, cfg.Validate(), "tools[0]: name is required")
+}
+
+func TestValidate_RejectsInprocessDuplicateToolNames(t *testing.T) {
+	cfg := &Config{LogicalServers: []LogicalServer{{
+		ID: "x", Name: "X", Transport: TransportInprocess,
+		Inprocess: &InprocessConfig{Command: "x", Tools: []ToolManifest{{Name: "now"}, {Name: "now"}}},
+	}}}
+	assertErrContains(t, cfg.Validate(), "duplicate tool name")
 }
 
 func TestValidate_RejectsProcessCommandAndURLTogether(t *testing.T) {
@@ -248,6 +283,37 @@ func TestLoad_MissingFile(t *testing.T) {
 	_, err := Load("/nonexistent/station-config-test.yaml")
 	if err == nil {
 		t.Fatal("Load: expected error for missing file, got nil")
+	}
+}
+
+func TestSummarize(t *testing.T) {
+	cfg := &Config{LogicalServers: []LogicalServer{
+		{
+			ID: "echo", Name: "Echo", Description: "an echo server", Transport: TransportProcess,
+			Process: &ProcessConfig{Command: "./echo-server"},
+		},
+		{
+			ID: "clock", Name: "Clock", Transport: TransportInprocess,
+			Inprocess: &InprocessConfig{Command: "./clock-plugin", Tools: []ToolManifest{{Name: "now"}}},
+		},
+	}}
+
+	summaries := cfg.Summarize()
+	if len(summaries) != 2 {
+		t.Fatalf("Summarize() len = %d, want 2", len(summaries))
+	}
+
+	echo := summaries[0]
+	if echo.ID != "echo" || echo.Name != "Echo" || echo.Transport != TransportProcess {
+		t.Errorf("echo summary = %+v", echo)
+	}
+	if echo.ToolNames != nil {
+		t.Errorf("echo.ToolNames = %v, want nil (process mode tools aren't statically known)", echo.ToolNames)
+	}
+
+	clock := summaries[1]
+	if len(clock.ToolNames) != 1 || clock.ToolNames[0] != "now" {
+		t.Errorf("clock.ToolNames = %v, want [now]", clock.ToolNames)
 	}
 }
 
