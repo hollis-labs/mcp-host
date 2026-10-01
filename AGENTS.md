@@ -30,8 +30,10 @@ go test -race -count=1 ./...
 There is no CI workflow and no Makefile in this repo, so these are the only
 gate (same convention as `go-mcp`).
 
-This repo is listed in `~/dev/hollis-labs/go.work` for local cross-module
-development against `apps/station` before either is tagged/pushed anywhere.
+There is no tracked or ambient `go.work`; both this repo and `apps/station`
+now have real tags. Cross-module development against an unreleased change
+here is a throwaway `go.work` outside the repos, per the portfolio
+convention — never a `replace`, never a tracked workspace file.
 
 ## Boundaries
 
