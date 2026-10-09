@@ -1,5 +1,22 @@
 # mcp-host
 
+## Maintenance moved to `github.com/hollis-labs/libs/plugin-mcp`
+
+This standalone repository is retired. Maintained source and documentation are
+in [github.com/hollis-labs/libs/plugin-mcp/mcp-host](https://github.com/hollis-labs/libs/tree/plugin-mcp%2Fv0.1.1/plugin-mcp/mcp-host), released in **`plugin-mcp/v0.1.1`**.
+Install the replacement module:
+
+```sh
+go get github.com/hollis-labs/libs/plugin-mcp@v0.1.1
+```
+
+Replace the `github.com/hollis-labs/mcp-host` import prefix with
+`github.com/hollis-labs/libs/plugin-mcp/mcp-host`, retaining the package subpath. Review the replacement documentation
+for any API changes before migrating. Existing standalone tags and history remain
+available; old module pins do not automatically redirect to the new module.
+
+The documentation below describes historical standalone usage.
+
 mcp-host is a dual-transport MCP plugin host, as a library: it hosts any
 number of independently addressable "logical MCP servers," each backed by
 either a real standalone MCP server (`process` mode) or a lightweight
